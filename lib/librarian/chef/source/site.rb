@@ -155,6 +155,7 @@ module Librarian
             dep_uri = URI.parse(dependency_uri(dependency))
             debug { "Caching #{dep_uri}" }
             http = Net::HTTP.new(dep_uri.host, dep_uri.port)
+            http.use_ssl = dep_uri.scheme == 'https'
             request = Net::HTTP::Get.new(dep_uri.path)
             response = http.start{|http| http.request(request)}
             unless Net::HTTPSuccess === response
@@ -178,7 +179,15 @@ module Librarian
           unless version_cache_path.exist?
             version_cache_path.mkpath
             debug { "Caching #{version_uri}" }
-            version_metadata_blob = Net::HTTP.get(URI.parse(version_uri))
+            parsed_version_uri = URI.parse(version_uri)
+            http = Net::HTTP.new(parsed_version_uri.host, parsed_version_uri.port)
+            http.use_ssl = parsed_version_uri.scheme == 'https'
+            request = Net::HTTP::Get.new(parsed_version_uri.path)
+            response = http.start{|http| http.request(request)}
+            unless Net::HTTPSuccess === response
+              raise Error, "Could not cache #{dependency} #{version_uri} because #{response.code} #{response.message}!"
+            end
+            version_metadata_blob = response.body
             JSON.parse(version_metadata_blob) # check that it's JSON
             version_metadata_cache_path(dependency, version_uri).open('wb') do |f|
               f.write(version_metadata_blob)
@@ -190,7 +199,25 @@ module Librarian
           version_archive_cache_path = version_archive_cache_path(dependency, version_uri)
           unless version_archive_cache_path.exist?
             version_archive_cache_path.open('wb') do |f|
-              f.write(Net::HTTP.get(URI.parse(file_uri)))
+              parsed_file_uri = URI.parse(file_uri)
+              http = Net::HTTP.new(parsed_file_uri.host, parsed_file_uri.port)
+              http.use_ssl = parsed_file_uri.scheme == 'https'
+              request = Net::HTTP::Get.new(parsed_file_uri.path)
+              response = http.start{|http| http.request(request)}
+              
+              # Follow redirects
+              while response.code.to_i == 302
+                parsed_file_uri = URI.parse(response.header['location'])
+                http = Net::HTTP.new(parsed_file_uri.host, parsed_file_uri.port)
+                http.use_ssl = parsed_file_uri.scheme == 'https'
+                request = Net::HTTP::Get.new(parsed_file_uri.path)
+                response = http.start{|http| http.request(request)}
+              end
+              
+              unless Net::HTTPSuccess === response
+                raise Error, "Could not cache #{dependency} #{version_uri} #{file_uri} because #{response.code} #{response.message}!"
+              end
+              f.write response.body
             end
           end
           version_package_cache_path = version_package_cache_path(dependency, version_uri)
